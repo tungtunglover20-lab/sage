@@ -1,0 +1,15 @@
+node_modules/
+.env
+logs/
+*.log
+.DS_Store
+
+# Generated indexing artifacts — rebuild with /index, don't commit them
+embeddings/*
+!embeddings/.gitkeep
+database/*
+!database/.gitkeep
+
+# Rulebook PDFs are the user's own copyrighted material — never commit them
+books/*.pdf
+!books/.gitkeep
