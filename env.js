@@ -37,7 +37,7 @@ const nodeEnv = optionalEnv('NODE_ENV', 'production');
  */
 const config = Object.freeze({
   discord: Object.freeze({
-    token: requireEnv('MTUzNTE0MjI2NjkyMTAyNTU4Ng.GMwBuI.wEeqpvtsofFNz12Nj5tiBzJuVG-aEbgwVLdKMw'),
+    token: requireEnv('DISCORD_TOKEN'),
     clientId: requireEnv('1535142266921025586'),
     guildId: optionalEnv('1530628952564044036'),
   }),
