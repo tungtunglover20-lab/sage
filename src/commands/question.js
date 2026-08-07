@@ -23,8 +23,6 @@ export const data = new SlashCommandBuilder()
 export async function execute(interaction) {
   const prompt = interaction.options.getString("prompt", true);
 
-  await interaction.deferReply();
-
   try {
     const completion = await client.chat.completions.create({
       model: config.openRouter.model,
