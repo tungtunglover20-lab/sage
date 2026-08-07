@@ -38,14 +38,23 @@ const nodeEnv = optionalEnv('NODE_ENV', 'production');
 const config = Object.freeze({
   discord: Object.freeze({
     token: requireEnv('DISCORD_TOKEN'),
-    clientId: requireEnv('1535142266921025586'),
-    guildId: optionalEnv('1530628952564044036'),
+    clientId: requireEnv('CLIENT_ID'),
+    guildId: optionalEnv('GUILD_ID'),
   }),
   openRouter: Object.freeze({
-    apiKey: requireEnv('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'),
-    baseUrl: optionalEnv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
-    model: optionalEnv('OPENROUTER_MODEL', 'google/gemma-4-26b-a4b-it'),
-    embeddingModel: optionalEnv('OPENROUTER_EMBEDDING_MODEL', 'openai/text-embedding-3-small'),
+    apiKey: requireEnv('OPENROUTER_API_KEY'),
+    baseUrl: optionalEnv(
+      'OPENROUTER_BASE_URL',
+      'https://openrouter.ai/api/v1'
+    ),
+    model: optionalEnv(
+      'OPENROUTER_MODEL',
+      'google/gemma-4-26b-a4b-it'
+    ),
+    embeddingModel: optionalEnv(
+      'OPENROUTER_EMBEDDING_MODEL',
+      'openai/text-embedding-3-small'
+    ),
   }),
   app: Object.freeze({
     nodeEnv,
