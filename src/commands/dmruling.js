@@ -1,4 +1,4 @@
-```js
+
 import { SlashCommandBuilder } from "discord.js";
 import OpenAI from "openai";
 import { tavily } from "@tavily/core";
@@ -274,4 +274,4 @@ ${sources}`;
     }
   }
 }
-```
+
