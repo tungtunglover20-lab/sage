@@ -1,10 +1,16 @@
+```js
 import { SlashCommandBuilder } from "discord.js";
 import OpenAI from "openai";
+import { tavily } from "@tavily/core";
 import config from "../config/env.js";
 
 const ai = new OpenAI({
   apiKey: config.openRouter.apiKey,
   baseURL: config.openRouter.baseUrl,
+});
+
+const search = tavily({
+  apiKey: process.env.TAVILY_API_KEY,
 });
 
 export const data = new SlashCommandBuilder()
@@ -22,14 +28,51 @@ export async function execute(interaction) {
 
   try {
     /*
-     * TODO:
-     * Replace this with actual web-search results.
-     *
-     * The search system should search for the question and return
-     * relevant D&D 5e rules discussions, official rules, and other
-     * reputable sources.
+     * IMPORTANT:
+     * interactionCreate.js already defers the interaction.
+     * Do NOT call interaction.deferReply() here.
      */
-    const research = "No external research was provided.";
+
+    // ---------------------------------------------------------
+    // 1. SEARCH THE WEB
+    // ---------------------------------------------------------
+
+    console.log(`[DM RULING] Searching web for: ${question}`);
+
+    const results = await search.search(question, {
+      searchDepth: "advanced",
+      maxResults: 6,
+      includeAnswer: true,
+    });
+
+    if (!results?.results?.length) {
+      await interaction.editReply(
+        "❌ I couldn't find enough reliable information online to make a ruling."
+      );
+      return;
+    }
+
+    // ---------------------------------------------------------
+    // 2. FORMAT THE RESEARCH FOR GEMMA
+    // ---------------------------------------------------------
+
+    const research = results.results
+      .map((result, index) => {
+        return [
+          `SOURCE ${index + 1}`,
+          `Title: ${result.title || "Unknown"}`,
+          `URL: ${result.url || "Unknown"}`,
+          `Content:`,
+          result.content || "No content available.",
+        ].join("\n");
+      })
+      .join("\n\n==============================\n\n");
+
+    // ---------------------------------------------------------
+    // 3. ASK GEMMA TO ANALYZE THE RESEARCH
+    // ---------------------------------------------------------
+
+    console.log("[DM RULING] Sending research to Gemma...");
 
     const completion = await ai.chat.completions.create({
       model: config.openRouter.model,
@@ -37,38 +80,49 @@ export async function execute(interaction) {
       messages: [
         {
           role: "system",
+
           content: `
 You are D&D Sage, an expert Dungeons & Dragons 5th Edition rules adjudicator.
 
-Your job in this command is to help a Dungeon Master make a decisive ruling
-when the rules are unclear, ambiguous, contradictory, or open to interpretation.
+Your job is to help a Dungeon Master make a decisive ruling when a rules
+question is unclear, ambiguous, contradictory, or open to interpretation.
 
-You MUST make an actual ruling. Do not simply tell the DM that the rules are
-ambiguous and leave the decision entirely to them.
+You MUST make an actual ruling.
 
-Analyze the situation using the available rules and research.
+Do NOT simply tell the DM that the rules are ambiguous and leave the decision
+entirely to them.
 
-Prioritize sources in approximately this order:
+Analyze the DM's question using the supplied web research.
 
-1. Official D&D rules and Wizards of the Coast material.
-2. Official errata, Sage Advice, and other official clarifications.
-3. The exact wording of the relevant rule.
-4. Well-established D&D rules resources and discussions.
-5. Community interpretations.
+IMPORTANT SOURCE RULES:
 
-Clearly distinguish between:
+1. Prefer official D&D/Wizards of the Coast sources whenever available.
+2. Prefer official rules text and official errata.
+3. Prefer established D&D rules references over random discussions.
+4. Community discussions may be useful for identifying common interpretations,
+   but they should not automatically be treated as authoritative.
+5. Do not invent rules, quotations, page numbers, URLs, or sources.
+6. Do not claim that a source says something unless the supplied research
+   actually supports that claim.
+7. If the research conflicts, explain the conflict.
+8. If the research is insufficient, explicitly say so.
 
-- RAW: Rules As Written.
-- RAI: Rules As Intended, when there is reasonable evidence for it.
-- Common interpretation: how the rule is commonly understood or played.
+Distinguish between:
+
+RAW = Rules As Written.
+RAI = Rules As Intended, when there is reasonable evidence for that interpretation.
+Common Interpretation = How the rule is commonly understood or played.
 
 If RAW gives a clear answer, say so.
 
-If RAW is genuinely ambiguous, explain the ambiguity and then give the ruling
-you believe is the fairest and most consistent with the game's rules.
+If RAW is genuinely ambiguous, explain the ambiguity and then make the ruling
+you believe is fairest and most consistent with the game's rules.
 
-Consider:
+Consider relevant interactions involving:
+
 - Action economy
+- Bonus actions
+- Reactions
 - Specific vs. general rules
 - Timing
 - Conditions
@@ -76,85 +130,148 @@ Consider:
 - Targeting
 - Concentration
 - Opportunity attacks
-- Reactions
 - Class features
-- Spell wording
+- Feats
+- Spells
 - Monster abilities
+- Equipment
 - Errata
-- Relevant interactions between multiple rules
+- Multiple interacting rules
 
-Do not invent rules, quotations, page numbers, or sources.
+Do not overcomplicate the answer.
 
-Keep the ruling practical for an actual game table.
+The response should be useful to a DM who needs to make a decision at the
+actual game table.
 
-Use this format:
+Use EXACTLY this structure:
 
-⚖️ DM RULING
+⚖️ **DM RULING**
 
+**Question:**
+Repeat the question given to you.
+  
 **Decision:**
-Give the decisive ruling in 1-3 sentences.
+Give the decisive answer in 1-3 sentences.
 
 **Rules Analysis:**
 Explain the relevant rules and how they interact.
 
 **RAW vs. RAI:**
-Explain whether the decision is RAW, RAI, both, or primarily a
-table ruling.
+Explain whether the ruling is RAW, RAI, both, or primarily a table ruling.
 
 **Why I Would Rule This Way:**
-Give a concise practical justification for the ruling.
+Give a concise practical justification.
 
-**Sources:**
-List the relevant sources provided by the research.
+Do NOT include a "Sources" section yourself.
+The bot will add the verified source links separately.
 
-If the available research does not contain enough information, explicitly
-say what is missing rather than inventing information.
+Do not mention being an AI.
+
+Do not say that you personally searched the internet.
+You were given research by the bot.
+
+Be confident but honest about uncertainty.
 `,
         },
+
         {
           role: "user",
+
           content: `
 DM QUESTION:
+
 ${question}
 
-EXTERNAL RESEARCH:
+
+WEB RESEARCH:
+
 ${research}
 
-Based on the question and the available research, make the best ruling
-for the Dungeon Master.
+
+Using the supplied research, analyze the DM's question and make the best
+decisive ruling possible.
+
+Remember:
+
+- Do not invent information.
+- Do not invent sources.
+- Distinguish RAW from RAI.
+- Give the DM an actual ruling.
 `,
         },
       ],
 
       temperature: 0.2,
-      max_tokens: 1500,
+      max_tokens: 1800,
     });
 
-    const response =
-      completion.choices?.[0]?.message?.content ||
+    const answer =
+      completion.choices?.[0]?.message?.content?.trim() ||
       "I couldn't produce a ruling.";
 
-    if (response.length <= 2000) {
-      await interaction.editReply(response);
+    // ---------------------------------------------------------
+    // 4. BUILD SOURCE LIST
+    // ---------------------------------------------------------
+
+    const sources = results.results
+      .slice(0, 6)
+      .map((result, index) => {
+        const title = result.title || `Source ${index + 1}`;
+        const url = result.url;
+
+        if (!url) {
+          return `**${index + 1}.** ${title}`;
+        }
+
+        return `**${index + 1}.** [${title}](${url})`;
+      })
+      .join("\n");
+
+    const finalResponse = `${answer}
+
+📚 **Sources**
+
+${sources}`;
+
+    // ---------------------------------------------------------
+    // 5. SEND THE RESPONSE
+    // ---------------------------------------------------------
+
+    if (finalResponse.length <= 2000) {
+      await interaction.editReply(finalResponse);
       return;
     }
 
-    await interaction.editReply(response.slice(0, 2000));
+    /*
+     * Discord messages have a 2000-character limit.
+     *
+     * Send the main ruling first, then split the remaining content
+     * into follow-up messages.
+     */
 
-    for (let i = 2000; i < response.length; i += 2000) {
-      await interaction.followUp(response.slice(i, i + 2000));
+    await interaction.editReply(finalResponse.slice(0, 2000));
+
+    for (let i = 2000; i < finalResponse.length; i += 2000) {
+      await interaction.followUp({
+        content: finalResponse.slice(i, i + 2000),
+      });
     }
   } catch (error) {
-    console.error("DM ruling error:", error);
+    console.error("[DM RULING ERROR]", error);
 
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply(
-        "❌ I couldn't produce a DM ruling right now. Please try again."
-      );
-    } else {
-      await interaction.reply(
-        "❌ I couldn't produce a DM ruling right now. Please try again."
-      );
+    try {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(
+          "❌ I couldn't produce a DM ruling right now. Please try again."
+        );
+      } else {
+        await interaction.reply(
+          "❌ I couldn't produce a DM ruling right now. Please try again."
+        );
+      }
+    } catch (replyError) {
+      console.error("[DM RULING REPLY ERROR]", replyError);
     }
   }
 }
+```
