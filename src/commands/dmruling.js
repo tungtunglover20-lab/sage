@@ -20,8 +20,6 @@ export const data = new SlashCommandBuilder()
 export async function execute(interaction) {
   const question = interaction.options.getString("question", true);
 
-  await interaction.deferReply();
-
   try {
     /*
      * TODO:
