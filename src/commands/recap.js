@@ -15,7 +15,7 @@ import config from "../config/env.js";
 // The ID is:
 // 1ABC123xyz456
 
-const GOOGLE_DOC_ID = "YOUR_GOOGLE_DOC_ID_HERE";
+const GOOGLE_DOC_ID = "1m5lg84VZ5yxcakzK1MCqZ1fwaaIF3sGxCppnyfmj3U4";
 
 const GOOGLE_DOC_URL =
   `https://docs.google.com/document/d/${GOOGLE_DOC_ID}/export?format=txt`;
