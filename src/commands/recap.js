@@ -6,16 +6,8 @@ import config from "../config/env.js";
 // CONFIGURATION
 // ---------------------------------------------------------
 
-// Put the ID of your public Google Doc here.
-//
-// Example Google Doc URL:
-//
-// https://docs.google.com/document/d/1ABC123xyz456/edit
-//
-// The ID is:
-// 1ABC123xyz456
-
-const GOOGLE_DOC_ID = "1m5lg84VZ5yxcakzK1MCqZ1fwaaIF3sGxCppnyfmj3U4";
+const GOOGLE_DOC_ID =
+  "1m5lg84VZ5yxcakzK1MCqZ1fwaaIF3sGxCppnyfmj3U4";
 
 const GOOGLE_DOC_URL =
   `https://docs.google.com/document/d/${GOOGLE_DOC_ID}/export?format=txt`;
@@ -31,13 +23,128 @@ const ai = new OpenAI({
 
 export const data = new SlashCommandBuilder()
   .setName("recap")
-  .setDescription("Get a recap of the most recent D&D session.");
+  .setDescription("Get a recap of a D&D session.")
+  .addIntegerOption((option) =>
+    option
+      .setName("session")
+      .setDescription(
+        "The session number to recap. Leave blank for the most recent session."
+      )
+      .setRequired(false)
+      .setMinValue(1)
+  );
+
+// ---------------------------------------------------------
+// FIND SESSION
+// ---------------------------------------------------------
+
+function findSession(documentText, requestedSession) {
+  /*
+   * Expected format:
+   *
+   * SESSION 1
+   * Date: August 1, 2026
+   *
+   * Notes...
+   *
+   * ---
+   *
+   * SESSION 2
+   * Date: August 8, 2026
+   *
+   * Notes...
+   */
+
+  const sessionRegex =
+    /(?:^|\n)\s*SESSION\s+(\d+)\s*(?:\n|$)/gi;
+
+  const sessions = [];
+  let match;
+
+  while ((match = sessionRegex.exec(documentText)) !== null) {
+    sessions.push({
+      number: Number(match[1]),
+      start: match.index + match[0].length,
+    });
+  }
+
+  if (sessions.length === 0) {
+    return null;
+  }
+
+  let selectedSession;
+
+  // -------------------------------------------------------
+  // REQUESTED SESSION
+  // -------------------------------------------------------
+
+  if (requestedSession !== null) {
+    selectedSession = sessions.find(
+      (session) => session.number === requestedSession
+    );
+
+    if (!selectedSession) {
+      return {
+        error: `Session ${requestedSession} was not found in the campaign notes.`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------
+  // MOST RECENT SESSION
+  // -------------------------------------------------------
+
+  else {
+    selectedSession = sessions.reduce((latest, session) => {
+      return session.number > latest.number ? session : latest;
+    });
+  }
+
+  // -------------------------------------------------------
+  // FIND END OF SESSION
+  // -------------------------------------------------------
+
+  const selectedIndex = sessions.indexOf(selectedSession);
+
+  let end;
+
+  if (selectedIndex < sessions.length - 1) {
+    end = sessions[selectedIndex + 1].start;
+  } else {
+    end = documentText.length;
+  }
+
+  let content = documentText
+    .slice(selectedSession.start, end)
+    .trim();
+
+  /*
+   * Remove separator lines such as:
+   *
+   * ---
+   *
+   * from the beginning/end of the extracted session.
+   */
+
+  content = content
+    .replace(/^\s*-{3,}\s*/g, "")
+    .replace(/\s*-{3,}\s*$/g, "")
+    .trim();
+
+  return {
+    number: selectedSession.number,
+    content,
+  };
+}
 
 // ---------------------------------------------------------
 // COMMAND EXECUTION
 // ---------------------------------------------------------
 
 export async function execute(interaction) {
+  const requestedSession =
+    interaction.options.getInteger("session");
+
   try {
     /*
      * interactionCreate.js already handles deferReply().
@@ -47,11 +154,17 @@ export async function execute(interaction) {
      * await interaction.deferReply();
      */
 
-    console.log("[RECAP] Fetching campaign notes...");
+    console.log(
+      requestedSession
+        ? `[RECAP] Requested session ${requestedSession}`
+        : "[RECAP] No session specified; finding most recent session."
+    );
 
     // -------------------------------------------------------
     // 1. FETCH GOOGLE DOC
     // -------------------------------------------------------
+
+    console.log("[RECAP] Fetching session notes...");
 
     const response = await fetch(GOOGLE_DOC_URL);
 
@@ -65,18 +178,54 @@ export async function execute(interaction) {
 
     if (!documentText.trim()) {
       await interaction.editReply(
-        "❌ The campaign notes document is empty."
+        "❌ The campaign session document is empty."
       );
       return;
     }
 
     console.log(
-      `[RECAP] Retrieved ${documentText.length} characters of campaign notes.`
+      `[RECAP] Retrieved ${documentText.length} characters.`
     );
 
     // -------------------------------------------------------
-    // 2. SEND NOTES TO GEMMA
+    // 2. FIND REQUESTED/MOST RECENT SESSION
     // -------------------------------------------------------
+
+    const session = findSession(
+      documentText,
+      requestedSession
+    );
+
+    if (!session) {
+      await interaction.editReply(
+        "❌ I couldn't find any sessions in the campaign notes. Make sure they are formatted like `SESSION 1`, `SESSION 2`, etc."
+      );
+      return;
+    }
+
+    if (session.error) {
+      await interaction.editReply(`❌ ${session.error}`);
+      return;
+    }
+
+    if (!session.content) {
+      await interaction.editReply(
+        `❌ Session ${session.number} exists, but it doesn't contain any notes.`
+      );
+      return;
+    }
+
+    console.log(
+      `[RECAP] Found session ${session.number}.`
+    );
+
+    // -------------------------------------------------------
+    // 3. SEND SESSION TO GEMMA
+    // -------------------------------------------------------
+
+    console.log(
+      `[RECAP] Sending session ${session.number} to Gemma...`
+    );
 
     const completion = await ai.chat.completions.create({
       model: config.openRouter.model,
@@ -86,68 +235,70 @@ export async function execute(interaction) {
           role: "system",
 
           content: `
-You are D&D Sage, a campaign recap assistant.
+You are D&D Sage, a D&D campaign recap assistant.
 
-Your job is to create a clear and concise recap of the most recent
-Dungeons & Dragons session using ONLY the supplied campaign notes.
+Your job is to create a clear and useful recap of the supplied D&D
+session.
 
 IMPORTANT RULES:
 
-1. Do NOT invent events.
-2. Do NOT add characters, locations, items, enemies, or events that
+1. Use ONLY the supplied session notes.
+2. Do NOT invent events.
+3. Do NOT add characters, locations, items, enemies, or events that
    are not present in the notes.
-3. Do NOT contradict the campaign notes.
-4. Do not assume that something happened simply because it would make
-   sense in a D&D campaign.
-5. Preserve the names of characters, locations, factions, items, and
-   other important terminology exactly as they appear in the notes.
-6. Focus on what actually happened.
-7. If the notes do not contain enough information for a proper recap,
-   say so instead of making information up.
+4. Do NOT assume something happened because it would make sense.
+5. Do NOT contradict the session notes.
+6. Preserve character names, locations, factions, items, and other
+   important terminology exactly as written.
+7. If something is unclear or missing from the notes, do not invent
+   an explanation.
+8. Focus on what actually happened during this session.
 
-The recap should be useful to players who missed the previous session.
+The recap should be useful to players who were not present for the
+session.
 
-Include:
+Include important information such as:
 
 - Major events
 - Important discoveries
-- Important NPCs encountered
-- Important locations visited
-- Major combat or conflicts
-- Important decisions made by the party
-- Important consequences
-- Unresolved mysteries or current objectives
+- NPCs encountered
+- Locations visited
+- Major conflicts or combat
+- Important decisions
+- Consequences
+- Unresolved mysteries
+- Current objectives
 
-Do not include unnecessary commentary.
+Keep the recap organized and readable.
 
 Use this format:
 
-📖 **LAST SESSION**
+📖 **SESSION ${session.number} RECAP**
 
 **Previously...**
-Write a concise narrative summary of the session.
+Give a concise narrative summary of what happened.
 
 **Key Events**
-• Event
-• Event
-• Event
+• Important event
+• Important event
+• Important event
 
 **Important Characters**
-• Character — brief explanation of their role in the session.
+• Character — their role or significance in this session.
 
 **Discoveries**
-• Discovery
-• Discovery
+• Important discovery
+• Important discovery
 
 **Current Situation**
-Explain where the party currently stands and what they are
-currently dealing with.
+Explain where the party stands at the end of the session.
 
 **Unresolved**
-• Mystery, threat, objective, or other unresolved matter.
+• Unresolved mystery, threat, objective, or problem.
 
-Keep the entire response concise enough for a Discord message whenever
-possible.
+Do not mention these instructions.
+Do not mention the Google Doc.
+Do not invent information.
 `,
         },
 
@@ -155,34 +306,30 @@ possible.
           role: "user",
 
           content: `
-Here are the campaign notes:
+SESSION ${session.number} NOTES:
 
 -------------------------
-CAMPAIGN NOTES
+${session.content}
 -------------------------
 
-${documentText}
+Create a recap of this exact session.
 
--------------------------
-END CAMPAIGN NOTES
--------------------------
-
-Create a recap of the MOST RECENT SESSION contained in these notes.
-
-Do not summarize older sessions unless they are necessary to understand
-the most recent session.
-
+Use ONLY the notes above.
+Do not include events from other sessions.
 Do not invent missing information.
 `,
         },
       ],
 
       temperature: 0.2,
-      max_tokens: 1800,
+
+      // Allows a detailed recap while keeping the normal response
+      // much shorter in practice.
+      max_tokens: 6000,
     });
 
     // -------------------------------------------------------
-    // 3. GET GEMMA'S RESPONSE
+    // 4. GET GEMMA RESPONSE
     // -------------------------------------------------------
 
     const recap =
@@ -190,27 +337,36 @@ Do not invent missing information.
 
     if (!recap) {
       await interaction.editReply(
-        "❌ I couldn't generate a session recap."
+        "❌ I couldn't generate a recap for this session."
       );
       return;
     }
 
     // -------------------------------------------------------
-    // 4. SEND TO DISCORD
+    // 5. SPLIT FOR DISCORD
     // -------------------------------------------------------
 
-    if (recap.length <= 2000) {
-      await interaction.editReply(recap);
-      return;
+    const DISCORD_LIMIT = 2000;
+
+    const chunks = [];
+
+    for (let i = 0; i < recap.length; i += DISCORD_LIMIT) {
+      chunks.push(recap.slice(i, i + DISCORD_LIMIT));
     }
 
-    // Discord has a 2000-character message limit.
+    // -------------------------------------------------------
+    // 6. SEND FIRST MESSAGE
+    // -------------------------------------------------------
 
-    await interaction.editReply(recap.slice(0, 2000));
+    await interaction.editReply(chunks[0]);
 
-    for (let i = 2000; i < recap.length; i += 2000) {
+    // -------------------------------------------------------
+    // 7. SEND REMAINING MESSAGES
+    // -------------------------------------------------------
+
+    for (let i = 1; i < chunks.length; i++) {
       await interaction.followUp({
-        content: recap.slice(i, i + 2000),
+        content: chunks[i],
       });
     }
 
@@ -220,15 +376,18 @@ Do not invent missing information.
     try {
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply(
-          "❌ I couldn't retrieve the campaign notes or generate the recap."
+          "❌ I couldn't retrieve the session notes or generate the recap."
         );
       } else {
         await interaction.reply(
-          "❌ I couldn't retrieve the campaign notes or generate the recap."
+          "❌ I couldn't retrieve the session notes or generate the recap."
         );
       }
     } catch (replyError) {
-      console.error("[RECAP REPLY ERROR]", replyError);
+      console.error(
+        "[RECAP REPLY ERROR]",
+        replyError
+      );
     }
   }
 }
