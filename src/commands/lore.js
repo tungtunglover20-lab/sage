@@ -6,10 +6,10 @@ import config from "../config/env.js";
 // CONFIGURATION
 // ---------------------------------------------------------
 
-const GOOGLE_DOC_ID = "YOUR_GOOGLE_DOC_ID_HERE";
+const GOOGLE_DOC_ID = "1FUUf-MI8z9McPNWk-8bqUTL96Q89lcxJ6l__yANXD0c";
 
 const GOOGLE_DOC_URL =
-  `https://docs.google.com/document/d/1FUUf-MI8z9McPNWk-8bqUTL96Q89lcxJ6l__yANXD0c/export?format=txt`;
+  `https://docs.google.com/document/d/${GOOGLE_DOC_ID}/export?format=txt`;
 
 const ai = new OpenAI({
   apiKey: config.openRouter.apiKey,
