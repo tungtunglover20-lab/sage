@@ -13,6 +13,10 @@ class GuildMusicPlayer {
     constructor(guildId) {
         this.guildId = guildId;
 
+        getStatus() {
+    return this.player.state.status;
+}
+
         this.player = createAudioPlayer({
             behaviors: {
                 noSubscriber: NoSubscriberBehavior.Pause,
