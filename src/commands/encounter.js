@@ -1197,6 +1197,149 @@ from nearby terrain when appropriate.
 };
 
 // ---------------------------------------------------------
+// ENCOUNTER HISTORY / ANTI-REPETITION
+// ---------------------------------------------------------
+
+const MAX_HISTORY_PER_TERRAIN = 30;
+const MAX_GENERATION_ATTEMPTS = 3;
+
+// Stores recently generated encounters.
+//
+// Example:
+// encounterHistory.get("forest") = [
+//   {
+//     difficulty: "Medium",
+//     encounter: "2 Ettercaps",
+//     full: "..."
+//   }
+// ]
+
+const encounterHistory = new Map();
+
+function getEncounterHistory(terrain) {
+  if (!encounterHistory.has(terrain)) {
+    encounterHistory.set(terrain, []);
+  }
+
+  return encounterHistory.get(terrain);
+}
+
+function normalizeEncounter(text) {
+  if (!text) return "";
+
+  return text
+    .toLowerCase()
+    .replace(/[*_`~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractEncounterLine(text) {
+  if (!text) return "";
+
+  const match = text.match(
+    /\*\*Encounter:\*\*\s*([\s\S]*?)(?=\*\*Difficulty:\*\*|\*\*CR:\*\*|$)/i
+  );
+
+  if (!match) {
+    return normalizeEncounter(text.slice(0, 300));
+  }
+
+  return normalizeEncounter(match[1]);
+}
+
+function isDuplicateEncounter(text, history) {
+  const currentEncounter = extractEncounterLine(text);
+
+  if (!currentEncounter) return false;
+
+  return history.some((previous) => {
+    const previousEncounter = normalizeEncounter(previous.encounter);
+
+    if (!previousEncounter) return false;
+
+    // Exact encounter match
+    if (currentEncounter === previousEncounter) {
+      return true;
+    }
+
+    // Prevent the model from simply adding/removing a tiny amount
+    // of text while keeping the exact same encounter.
+    if (
+      currentEncounter.includes(previousEncounter) ||
+      previousEncounter.includes(currentEncounter)
+    ) {
+      return true;
+    }
+
+    return false;
+  });
+}
+
+function saveEncounter(terrain, difficulty, encounter) {
+  const history = getEncounterHistory(terrain);
+
+  const encounterLine = extractEncounterLine(encounter);
+
+  history.push({
+    difficulty,
+    encounter: encounterLine,
+    full: encounter,
+    timestamp: Date.now(),
+  });
+
+  // Keep only the most recent encounters.
+  while (history.length > MAX_HISTORY_PER_TERRAIN) {
+    history.shift();
+  }
+}
+
+function buildRecentEncounterContext(terrain) {
+  const history = getEncounterHistory(terrain);
+
+  if (history.length === 0) {
+    return `
+There are no previous encounters for this terrain.
+
+You have complete freedom to choose an encounter.
+`;
+  }
+
+  return `
+RECENTLY GENERATED ENCOUNTERS FOR THIS TERRAIN:
+
+${history
+  .slice()
+  .reverse()
+  .map(
+    (entry, index) =>
+      `${index + 1}. [${entry.difficulty}] ${entry.encounter}`
+  )
+  .join("\n")}
+
+ANTI-REPETITION RULES:
+
+- DO NOT generate an encounter identical to any encounter above.
+- DO NOT reuse the same creature combination from the encounters above.
+- Avoid using the same primary creature repeatedly.
+- If a creature appeared recently, prefer a different creature.
+- Do not simply change the number of monsters to make a repeated encounter
+  look different.
+- Do not simply change the encounter description while keeping the same
+  monsters.
+- Try to use creatures that have NOT appeared recently.
+- Easy, Medium, and Hard encounters all share this history.
+- A creature used in an Easy encounter should NOT immediately reappear in
+  a Medium or Hard encounter unless the available creature pool is very small.
+- Variety is more important than choosing the most obvious monster.
+
+The new encounter should feel substantially different from the recent
+encounters above.
+`;
+}
+
+
+// ---------------------------------------------------------
 // COMMAND EXECUTION
 // ---------------------------------------------------------
 
@@ -1242,18 +1385,32 @@ export async function execute(interaction) {
     const terrainInfo =
       TERRAIN_INFO[terrain] || TERRAIN_INFO.wilderness;
 
+    const recentHistory = buildRecentEncounterContext(terrain);
+
     // -------------------------------------------------------
     // GENERATE ENCOUNTER
     // -------------------------------------------------------
 
-    const completion = await ai.chat.completions.create({
-      model: config.openRouter.model,
+    let encounter = null;
+    let selectedDifficulty = "Unknown";
 
-      messages: [
-        {
-          role: "system",
+    for (
+      let attempt = 1;
+      attempt <= MAX_GENERATION_ATTEMPTS;
+      attempt++
+    ) {
+      console.log(
+        `[ENCOUNTER] Generation attempt ${attempt}/${MAX_GENERATION_ATTEMPTS}`
+      );
 
-          content: `
+      const completion = await ai.chat.completions.create({
+        model: config.openRouter.model,
+
+        messages: [
+          {
+            role: "system",
+
+            content: `
 You are D&D Sage, an expert D&D 5e encounter generator.
 
 Your job is to generate ONE random encounter appropriate for the supplied
@@ -1263,27 +1420,51 @@ The encounter MUST feel natural for the specified environment.
 
 The encounter should be balanced around the party's level and size.
 
-IMPORTANT:
+IMPORTANT RANDOMIZATION RULES:
 
-- The encounter should be challenging but not absurdly deadly.
-- Do not automatically choose a single monster.
-- You may choose one powerful creature.
-- You may choose several weaker creatures.
-- You may choose a mixture of creatures.
-- Randomize the encounter rather than always choosing the most obvious
-  creature.
-- Creatures should make sense for the terrain.
-- Do not use creatures that obviously don't belong in the environment
-  unless there is a compelling explanation.
-- Consider action economy.
-- Consider the combined strength of multiple monsters.
-- A large group of weak creatures can be appropriate instead of one
-  powerful creature.
-- A solo monster should generally have enough power or action economy
-  to avoid being trivially defeated by the entire party.
+- Every generated encounter should be meaningfully different.
+- DO NOT repeatedly use the same monsters.
+- DO NOT repeatedly use the same monster combination.
+- DO NOT always choose the most obvious monster for the terrain.
+- Use the full variety of creatures provided in TERRAIN INFORMATION.
+- Prefer creatures that have not appeared recently.
+- Vary between beasts, humanoids, monstrosities, undead, elementals,
+  fey, aberrations, dragons, environmental encounters, and other
+  appropriate creature types.
+- Do not make every encounter a combat against a famous monster.
 - Do not make every encounter a boss fight.
 - Most encounters should be ordinary encounters appropriate for travel.
 - Occasionally generate unusual or memorable encounters.
+- The encounter can be one creature, multiple creatures, or a mixture.
+- Consider action economy.
+- Consider the combined strength of multiple monsters.
+- A large group of weaker creatures can be appropriate instead of one
+  powerful creature.
+- A solo monster should generally have enough power or action economy
+  to avoid being trivially defeated by the entire party.
+- Do not invent creatures that aren't appropriate for the terrain unless
+  there is a compelling explanation.
+
+DIFFICULTY:
+
+Choose ONE difficulty:
+
+- Easy
+- Medium
+- Hard
+
+Do NOT intentionally create Deadly encounters.
+
+The difficulty should actually reflect the party's level and size.
+
+IMPORTANT:
+
+Easy, Medium, and Hard all share the same encounter history.
+
+A monster used recently in an Easy encounter should not simply be reused
+in a Medium or Hard encounter.
+
+${recentHistory}
 
 PARTY LEVEL:
 ${level}
@@ -1297,12 +1478,7 @@ ${terrain}
 TERRAIN INFORMATION:
 ${terrainInfo}
 
-ENCOUNTER DIFFICULTY:
-
-Aim primarily for encounters in the EASY through HARD range.
-
-Avoid intentionally generating a DEADLY encounter unless the creature
-combination is still reasonably survivable and you clearly label it.
+CR RULES:
 
 Use D&D 5e CR and encounter-building principles as a guideline.
 
@@ -1312,18 +1488,6 @@ If you know the creature's standard 5e CR, include it.
 
 If you are uncertain about a creature's exact CR, do not make up a
 number. Instead write "CR varies by source" or omit the CR.
-
-The encounter can contain:
-
-- One creature
-- Two or more creatures
-- A group of weaker creatures
-- A strong creature with weaker supporting creatures
-
-Make the encounter feel RANDOM.
-
-Do not always pick dragons, giants, or other famous monsters simply
-because the party is high level.
 
 OUTPUT FORMAT:
 
@@ -1336,7 +1500,7 @@ OUTPUT FORMAT:
 [Creature(s) and quantity]
 
 **Difficulty:**
-[Easy / Medium / Hard / Deadly]
+[Easy / Medium / Hard]
 
 **CR:**
 [CR information if known]
@@ -1354,13 +1518,13 @@ Give a few useful details the DM can use during the encounter.
 
 Keep the response practical and concise.
 `,
-        },
+          },
 
-        {
-          role: "user",
+          {
+            role: "user",
 
-          content: `
-Generate a random D&D encounter for:
+            content: `
+Generate a RANDOM D&D 5e encounter.
 
 Party:
 ${partySize} players
@@ -1369,29 +1533,86 @@ Level ${level}
 Terrain:
 ${terrain}
 
-Remember:
+${recentHistory}
 
-- The encounter must fit the terrain.
-- The encounter must be appropriate for the party.
-- It can be one strong creature or multiple weaker creatures.
-- Randomize the encounter.
-- Avoid automatically choosing the strongest possible monster.
-- Make it feel like something the party could naturally encounter
-  while traveling through this environment.
+REQUIREMENTS:
+
+1. The encounter must fit the terrain.
+2. The encounter must be appropriate for the party.
+3. Choose Easy, Medium, or Hard difficulty.
+4. Do NOT intentionally create Deadly difficulty.
+5. Do NOT repeat a recent encounter.
+6. Do NOT reuse the same creature combination from the recent history.
+7. Prefer creatures that have not appeared recently.
+8. Make the encounter meaningfully different from previous encounters.
+9. Do not automatically choose dragons, giants, or other famous monsters.
+10. Use variety.
+11. Make it feel like something the party could naturally encounter
+    while traveling through this environment.
+
+Generate exactly ONE encounter.
 `,
-        },
-      ],
+          },
+        ],
 
-      temperature: 0.9,
-      max_tokens: 1400,
-    });
+        temperature: 1.1,
+        max_tokens: 1400,
+      });
+
+      const generated =
+        completion.choices?.[0]?.message?.content?.trim();
+
+      if (!generated) {
+        continue;
+      }
+
+      // ---------------------------------------------------
+      // CHECK FOR DUPLICATE
+      // ---------------------------------------------------
+
+      const duplicate = isDuplicateEncounter(
+        generated,
+        getEncounterHistory(terrain)
+      );
+
+      if (duplicate) {
+        console.log(
+          `[ENCOUNTER] Duplicate detected on attempt ${attempt}.`
+        );
+
+        if (attempt < MAX_GENERATION_ATTEMPTS) {
+          continue;
+        }
+
+        // If all attempts somehow duplicate, accept the final
+        // result rather than failing the command completely.
+        console.log(
+          "[ENCOUNTER] Maximum attempts reached. Accepting final result."
+        );
+      }
+
+      encounter = generated;
+
+      // ---------------------------------------------------
+      // EXTRACT DIFFICULTY
+      // ---------------------------------------------------
+
+      const difficultyMatch = generated.match(
+        /\*\*Difficulty:\*\*\s*(Easy|Medium|Hard)/i
+      );
+
+      if (difficultyMatch) {
+        selectedDifficulty =
+          difficultyMatch[1].charAt(0).toUpperCase() +
+          difficultyMatch[1].slice(1).toLowerCase();
+      }
+
+      break;
+    }
 
     // -------------------------------------------------------
-    // GET RESPONSE
+    // NO RESPONSE
     // -------------------------------------------------------
-
-    const encounter =
-      completion.choices?.[0]?.message?.content?.trim();
 
     if (!encounter) {
       await interaction.editReply(
@@ -1400,6 +1621,26 @@ Remember:
 
       return;
     }
+
+    // -------------------------------------------------------
+    // SAVE TO HISTORY
+    // -------------------------------------------------------
+
+    saveEncounter(
+      terrain,
+      selectedDifficulty,
+      encounter
+    );
+
+    console.log(
+      `[ENCOUNTER] Generated ${selectedDifficulty} encounter.`
+    );
+
+    console.log(
+      `[ENCOUNTER] History for ${terrain}: ${
+        getEncounterHistory(terrain).length
+      } encounters`
+    );
 
     // -------------------------------------------------------
     // SEND RESPONSE
